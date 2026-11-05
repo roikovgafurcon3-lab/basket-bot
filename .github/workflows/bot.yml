@@ -28,15 +28,15 @@ jobs:
       - name: Install deps
         run: pip install -r requirements.txt
 
-      - name: Run bot (5h45m, потом перезапуск)
+      - name: Run bot
         env:
-          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
-          CHAT_ID: ${{ secrets.CHAT_ID }}
+          BOT_TOKEN: ${{ vars.BOT_TOKEN }}
+          CHAT_ID: ${{ vars.CHAT_ID }}
           PORT: 8080
         run: |
           python basket_bot.py &
 
-          # Ждём до 5ч45м, потом останавливаем бота аккуратно
+          # Ждём до 5ч45м, потом останавливаем бота
           BOT_PID=$!
           sleep 20700
           kill $BOT_PID || true
