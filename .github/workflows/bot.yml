@@ -1,7 +1,5 @@
 name: bot
 
-# Воркфлоу 24/7: бот крутится почти 6 часов, затем воркер
-# сам запускает следующий. Часовой cron — резервный триггер.
 on:
   workflow_dispatch:
   schedule:
@@ -35,15 +33,19 @@ jobs:
           PORT: 8080
         run: |
           python basket_bot.py &
-
-          # Ждём до 5ч45м, потом останавливаем бота
           BOT_PID=$!
           sleep 20700
           kill $BOT_PID || true
 
       - name: Relaunch (самозапуск следующего воркера)
         if: always()
-        run: gh workflow run bot.yml
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
+          GH_API_URL: ${{ github.api_url }}
+        run: |
+          curl -sS -X POST \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            "$GH_API_URL/repos/$GH_REPO/actions/workflows/bot.yml/dispatches" \
+            -d '{"ref":"main"}' || true
