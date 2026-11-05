@@ -1,0 +1,49 @@
+name: bot
+
+# Воркфлоу 24/7: бот крутится почти 6 часов, затем воркер
+# сам запускает следующий. Часовой cron — резервный триггер.
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 * * * *'
+
+permissions:
+  actions: write
+
+concurrency:
+  group: basket-bot
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install deps
+        run: pip install -r requirements.txt
+
+      - name: Run bot (5h45m, потом перезапуск)
+        env:
+          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+          CHAT_ID: ${{ secrets.CHAT_ID }}
+          PORT: 8080
+        run: |
+          python basket_bot.py &
+
+          # Ждём до 5ч45м, потом останавливаем бота аккуратно
+          BOT_PID=$!
+          sleep 20700
+          kill $BOT_PID || true
+
+      - name: Relaunch (самозапуск следующего воркера)
+        if: always()
+        run: gh workflow run bot.yml
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
