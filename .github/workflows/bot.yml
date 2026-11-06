@@ -7,6 +7,7 @@ on:
 
 permissions:
   actions: write
+  contents: write
 
 concurrency:
   group: basket-bot
@@ -31,6 +32,8 @@ jobs:
           BOT_TOKEN: ${{ vars.BOT_TOKEN }}
           CHAT_ID: ${{ vars.CHAT_ID }}
           PORT: 8080
+          GITHUB_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
         run: |
           python basket_bot.py &
           BOT_PID=$!
