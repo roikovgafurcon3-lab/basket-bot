@@ -194,7 +194,7 @@ def is_admin(chat_id):
 
 # ======================= РАСЧЁТ РЕЖИМА =======================
 
-EPOCH = MOSCOW.localize(datetime(2026, 11, 6, ANCHOR_HOUR, 0, 0))
+EPOCH = MOSCOW.localize(datetime(2026, 11, 5, ANCHOR_HOUR, 0, 0))
 
 
 def get_anchor(now):
