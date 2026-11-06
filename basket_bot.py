@@ -181,6 +181,14 @@ def get_enabled_ids():
 
 load_subscribers()
 
+ADMIN_ID = CHAT_ID
+awaiting_broadcast = {}
+
+
+def is_admin(chat_id):
+    return str(chat_id) == str(ADMIN_ID)
+
+
 # ======================= РАСЧЁТ РЕЖИМА =======================
 
 def get_anchor(now):
@@ -249,6 +257,69 @@ def settings_keyboard(chat_id):
         "⬅️ Назад", callback_data="back_main"
     ))
     return kb
+
+
+def admin_keyboard():
+    kb = types.InlineKeyboardMarkup()
+    kb.add(types.InlineKeyboardButton(
+        "📢 Рассылка всем", callback_data="admin_broadcast"
+    ))
+    kb.add(types.InlineKeyboardButton(
+        "📊 Статистика", callback_data="admin_stats"
+    ))
+    kb.add(types.InlineKeyboardButton(
+        "👥 Подписчики", callback_data="admin_subs"
+    ))
+    kb.add(types.InlineKeyboardButton(
+        "⬅️ Назад", callback_data="back_main"
+    ))
+    return kb
+
+
+def broadcast_to_all(text):
+    ids = get_enabled_ids()
+    sent = 0
+    failed = 0
+    for cid in ids:
+        try:
+            bot.send_message(cid, text)
+            sent += 1
+        except Exception as e:
+            failed += 1
+            print("broadcast to %s failed: %s" % (cid, e))
+            try:
+                if "blocked" in str(e).lower():
+                    if str(cid) in subscribers:
+                        subscribers[str(cid)]["enabled"] = False
+                        save_subscribers()
+            except Exception:
+                pass
+    return sent, failed
+
+
+def format_stats():
+    state = get_state()
+    total = len(subscribers)
+    enabled_n = len(get_enabled_ids())
+    lines = [
+        "📊 Статистика",
+        "",
+        "Сейчас идёт: {}. {}".format(state["mode"], minutes_to_basket_text(state)),
+        "Подписчиков всего: {}".format(total),
+        "С включёнными: {}".format(enabled_n),
+    ]
+    return "\n".join(lines)
+
+
+def format_subscribers():
+    lines = ["👥 Подписчики:"]
+    for cid, info in subscribers.items():
+        name = "@" + info.get("username", "") if info.get("username") else info.get("first_name", "")
+        status = "ВКЛ" if info.get("enabled") else "ВЫКЛ"
+        lines.append("- {} ({}): {}".format(name or "без ника", cid, status))
+    if len(lines) == 1:
+        lines.append("- пока пусто")
+    return "\n".join(lines)
 
 
 def send_to_all(text):
@@ -515,8 +586,76 @@ def cb_admin_stats(call):
     )
 
 
+@bot.message_handler(commands=["admin"])
+def cmd_admin(message):
+    if not is_admin(message.chat.id):
+        bot.send_message(message.chat.id, "⛔ Нет доступа. Админка только для владельца.")
+        return
+    bot.send_message(
+        message.chat.id,
+        "🛠 Админка\n\nВыбери действие:",
+        reply_markup=admin_keyboard(),
+    )
+
+
+@bot.message_handler(commands=["broadcast"])
+def cmd_broadcast(message):
+    if not is_admin(message.chat.id):
+        bot.send_message(message.chat.id, "⛔ Нет доступа.")
+        return
+    parts = (message.text or "").split(" ", 1)
+    if len(parts) < 2 or not parts[1].strip():
+        awaiting_broadcast[str(message.chat.id)] = True
+        bot.send_message(
+            message.chat.id,
+            "📢 Введи текст рассылки следующим сообщением.\n"
+            "Придёт всем включённым подписчикам. Для отмены — /cancel",
+        )
+        return
+    text = parts[1].strip()
+    sent, failed = broadcast_to_all(text)
+    bot.send_message(
+        message.chat.id,
+        "✅ Рассылка отправлена.\nУспешно: {}\nНе удалось: {}".format(sent, failed),
+        reply_markup=admin_keyboard(),
+    )
+
+
+@bot.message_handler(commands=["cancel"])
+def cmd_cancel(message):
+    awaiting_broadcast.pop(str(message.chat.id), None)
+    bot.send_message(message.chat.id, "Отменено.", reply_markup=main_keyboard())
+
+
+@bot.message_handler(commands=["subscribers"])
+def cmd_subs_list(message):
+    if not is_admin(message.chat.id):
+        bot.send_message(message.chat.id, "⛔ Нет доступа.")
+        return
+    bot.send_message(
+        message.chat.id,
+        format_subscribers(),
+        reply_markup=admin_keyboard(),
+    )
+
+
 @bot.message_handler(func=lambda m: True)
 def any_message(message):
+    # Если админ ждёт текст рассылки — следующее сообщение считаем рассылкой
+    if is_admin(message.chat.id) and awaiting_broadcast.get(str(message.chat.id)):
+        awaiting_broadcast.pop(str(message.chat.id), None)
+        text = (message.text or "").strip()
+        if not text:
+            bot.send_message(message.chat.id, "Пустой текст, отмена.", reply_markup=admin_keyboard())
+            return
+        sent, failed = broadcast_to_all(text)
+        bot.send_message(
+            message.chat.id,
+            "✅ Рассылка отправлена.\nУспешно: {}\nНе удалось: {}".format(sent, failed),
+            reply_markup=admin_keyboard(),
+        )
+        return
+
     if str(message.chat.id) not in subscribers:
         info = ensure_subscriber(message.chat)
         state = get_state()
@@ -584,6 +723,38 @@ def cb_toggle(call):
         ),
         reply_markup=settings_keyboard(call.message.chat.id),
     )
+
+
+@bot.callback_query_handler(func=lambda call: call.data == "admin_broadcast")
+def cb_admin_broadcast(call):
+    if not is_admin(call.message.chat.id):
+        bot.answer_callback_query(call.id, text="⛔ Нет доступа", show_alert=True)
+        return
+    awaiting_broadcast[str(call.message.chat.id)] = True
+    bot.answer_callback_query(call.id)
+    bot.send_message(
+        call.message.chat.id,
+        "📢 Введи текст рассылки следующим сообщением.\n"
+        "Придёт всем включённым подписчикам. Для отмены — /cancel",
+    )
+
+
+@bot.callback_query_handler(func=lambda call: call.data == "admin_stats")
+def cb_admin_stats(call):
+    if not is_admin(call.message.chat.id):
+        bot.answer_callback_query(call.id, text="⛔ Нет доступа", show_alert=True)
+        return
+    bot.answer_callback_query(call.id)
+    bot.send_message(call.message.chat.id, format_stats(), reply_markup=admin_keyboard())
+
+
+@bot.callback_query_handler(func=lambda call: call.data == "admin_subs")
+def cb_admin_subs(call):
+    if not is_admin(call.message.chat.id):
+        bot.answer_callback_query(call.id, text="⛔ Нет доступа", show_alert=True)
+        return
+    bot.answer_callback_query(call.id)
+    bot.send_message(call.message.chat.id, format_subscribers(), reply_markup=admin_keyboard())
 
 
 @bot.callback_query_handler(func=lambda call: call.data == "back_main")
