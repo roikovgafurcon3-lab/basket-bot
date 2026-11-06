@@ -194,17 +194,17 @@ def is_admin(chat_id):
 
 # ======================= РАСЧЁТ РЕЖИМА =======================
 
+EPOCH = MOSCOW.localize(datetime(2026, 11, 6, ANCHOR_HOUR, 0, 0))
+
+
 def get_anchor(now):
-    anchor = now.replace(hour=ANCHOR_HOUR, minute=0, second=0, microsecond=0)
-    if now < anchor:
-        anchor = anchor - timedelta(days=1)
-    return anchor
+    return EPOCH
 
 
 def get_state(now=None):
     if now is None:
         now = datetime.now(MOSCOW)
-    elapsed = (now - get_anchor(now)).total_seconds()
+    elapsed = (now - EPOCH).total_seconds()
     pos_sec = int(elapsed) % CYCLE_SEC
     slot = pos_sec // (SLOT_MIN * 60)
     in_basket = (slot == BASKET_INDEX)
