@@ -377,6 +377,144 @@ def cmd_test(message):
     )
 
 
+# ======================= АДМИНКА (только владелец) =======================
+
+def is_admin(chat_id):
+    return str(chat_id) == str(CHAT_ID)
+
+
+def admin_keyboard():
+    kb = types.InlineKeyboardMarkup()
+    kb.add(types.InlineKeyboardButton("📢 Рассылка", callback_data="admin_broadcast_help"))
+    kb.add(types.InlineKeyboardButton("👥 Подписчики", callback_data="admin_subs"))
+    kb.add(types.InlineKeyboardButton("📊 Статистика", callback_data="admin_stats"))
+    return kb
+
+
+@bot.message_handler(commands=["admin"])
+def cmd_admin(message):
+    if not is_admin(message.chat.id):
+        bot.send_message(message.chat.id, "⛔ Доступ запрещён. Только владелец.")
+        return
+    bot.send_message(
+        message.chat.id,
+        "👑 Админка\n\nВыбери действие:",
+        reply_markup=admin_keyboard(),
+    )
+
+
+@bot.message_handler(commands=["subs"])
+def cmd_subs(message):
+    if not is_admin(message.chat.id):
+        bot.send_message(message.chat.id, "⛔ Доступ запрещён.")
+        return
+    lines = []
+    for cid, info in subscribers.items():
+        uname = "@" + info.get("username", "") if info.get("username") else "без ника"
+        status = "✅" if info.get("enabled") else "🔕"
+        lines.append(status + " " + str(cid) + " (" + uname + ")")
+    text = "👥 Подписчики (" + str(len(subscribers)) + "):\n" + ("\n".join(lines) if lines else "никого нет")
+    bot.send_message(message.chat.id, text, reply_markup=admin_keyboard())
+
+
+@bot.message_handler(commands=["stats"])
+def cmd_stats(message):
+    if not is_admin(message.chat.id):
+        bot.send_message(message.chat.id, "⛔ Доступ запрещён.")
+        return
+    state = get_state()
+    bot.send_message(
+        message.chat.id,
+        "📊 Статистика\n\n"
+        "Сейчас: {}\n"
+        "{}\n\n"
+        "Подписчиков всего: {}\n"
+        "С включёнными уведомлениями: {}".format(
+            state["mode"], minutes_to_basket_text(state),
+            len(subscribers), len(get_enabled_ids()),
+        ),
+        reply_markup=admin_keyboard(),
+    )
+
+
+@bot.message_handler(func=lambda m: m.text and m.text.startswith("/broadcast"))
+def cmd_broadcast(message):
+    if not is_admin(message.chat.id):
+        bot.send_message(message.chat.id, "⛔ Доступ запрещён.")
+        return
+    text = message.text[len("/broadcast"):].strip()
+    if not text:
+        bot.send_message(
+            message.chat.id,
+            "📢 Использование: /broadcast <текст>\n\nПример: /broadcast Всем привет!",
+            reply_markup=admin_keyboard(),
+        )
+        return
+    ids = get_enabled_ids()
+    ok = 0
+    fail = 0
+    for cid in ids:
+        try:
+            bot.send_message(cid, "📢 Рассылка от админа:\n\n" + text)
+            ok += 1
+        except Exception as e:
+            fail += 1
+            print("broadcast to %s failed: %s" % (cid, e))
+    bot.send_message(
+        message.chat.id,
+        "✅ Рассылка отправлена: {}/{} (ошибок: {})".format(ok, len(ids), fail),
+        reply_markup=admin_keyboard(),
+    )
+
+
+@bot.callback_query_handler(func=lambda call: call.data == "admin_broadcast_help")
+def cb_admin_broadcast_help(call):
+    if not is_admin(call.message.chat.id):
+        bot.answer_callback_query(call.id, text="⛔ Только владелец", show_alert=True)
+        return
+    bot.answer_callback_query(call.id)
+    bot.send_message(
+        call.message.chat.id,
+        "📢 Рассылка\n\nНапиши команду: /broadcast <текст>\n\nПример: /broadcast Баскет через 30 минут!",
+    )
+
+
+@bot.callback_query_handler(func=lambda call: call.data == "admin_subs")
+def cb_admin_subs(call):
+    if not is_admin(call.message.chat.id):
+        bot.answer_callback_query(call.id, text="⛔ Только владелец", show_alert=True)
+        return
+    bot.answer_callback_query(call.id)
+    lines = []
+    for cid, info in subscribers.items():
+        uname = "@" + info.get("username", "") if info.get("username") else "без ника"
+        status = "✅" if info.get("enabled") else "🔕"
+        lines.append(status + " " + str(cid) + " (" + uname + ")")
+    text = "👥 Подписчики (" + str(len(subscribers)) + "):\n" + ("\n".join(lines) if lines else "никого нет")
+    bot.send_message(call.message.chat.id, text, reply_markup=admin_keyboard())
+
+
+@bot.callback_query_handler(func=lambda call: call.data == "admin_stats")
+def cb_admin_stats(call):
+    if not is_admin(call.message.chat.id):
+        bot.answer_callback_query(call.id, text="⛔ Только владелец", show_alert=True)
+        return
+    bot.answer_callback_query(call.id)
+    state = get_state()
+    bot.send_message(
+        call.message.chat.id,
+        "📊 Статистика\n\n"
+        "Сейчас: {}\n"
+        "{}\n\n"
+        "Подписчиков всего: {}\n"
+        "С включёнными уведомлениями: {}".format(
+            state["mode"], minutes_to_basket_text(state),
+            len(subscribers), len(get_enabled_ids()),
+        ),
+        reply_markup=admin_keyboard(),
+    )
+
+
 @bot.message_handler(func=lambda m: True)
 def any_message(message):
     if str(message.chat.id) not in subscribers:
