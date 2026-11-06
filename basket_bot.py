@@ -183,6 +183,9 @@ load_subscribers()
 
 ADMIN_ID = CHAT_ID
 awaiting_broadcast = {}
+awaiting_send_one = {}
+awaiting_send_multi = {}
+multi_selected = {}
 
 
 def is_admin(chat_id):
@@ -265,6 +268,12 @@ def admin_keyboard():
         "📢 Рассылка всем", callback_data="admin_broadcast"
     ))
     kb.add(types.InlineKeyboardButton(
+        "✉️ Отправить одному", callback_data="admin_send_one"
+    ))
+    kb.add(types.InlineKeyboardButton(
+        "👥 Выбрать нескольких", callback_data="admin_multi"
+    ))
+    kb.add(types.InlineKeyboardButton(
         "📊 Статистика", callback_data="admin_stats"
     ))
     kb.add(types.InlineKeyboardButton(
@@ -320,6 +329,88 @@ def format_subscribers():
     if len(lines) == 1:
         lines.append("- пока пусто")
     return "\n".join(lines)
+
+
+def resolve_target(token):
+    token = (token or "").strip()
+    if not token:
+        return None
+    if token.startswith("@"):
+        token = token[1:]
+    # по id
+    if token.lstrip("-").isdigit():
+        return int(token)
+    # по юзернейму
+    t = token.lower()
+    for cid, info in subscribers.items():
+        if (info.get("username") or "").lower() == t:
+            return int(cid)
+    return None
+
+
+def send_to_user(cid, text):
+    try:
+        bot.send_message(cid, text)
+        return True
+    except Exception as e:
+        print("send to %s failed: %s" % (cid, e))
+        try:
+            if "blocked" in str(e).lower():
+                if str(cid) in subscribers:
+                    subscribers[str(cid)]["enabled"] = False
+                    save_subscribers()
+        except Exception:
+            pass
+        return False
+
+
+def broadcast_to_ids(ids, text):
+    sent = 0
+    failed = 0
+    for cid in ids:
+        if send_to_user(cid, text):
+            sent += 1
+        else:
+            failed += 1
+    return sent, failed
+
+
+def subscribers_list_keyboard():
+    kb = types.InlineKeyboardMarkup()
+    for cid_str, info in list(subscribers.items()):
+        if str(cid_str) == str(ADMIN_ID):
+            continue
+        name = ("@" + info.get("username", "")) if info.get("username") else (info.get("first_name", "") or cid_str)
+        kb.add(types.InlineKeyboardButton(name, callback_data="send_to:" + str(cid_str)))
+    kb.add(types.InlineKeyboardButton(
+        "⬅️ Назад", callback_data="back_main"
+    ))
+    return kb
+
+
+def multi_keyboard(admin_id):
+    kb = types.InlineKeyboardMarkup()
+    selected = multi_selected.get(str(admin_id), set())
+    has_any = False
+    for cid_str, info in list(subscribers.items()):
+        if str(cid_str) == str(ADMIN_ID):
+            continue
+        has_any = True
+        name = ("@" + info.get("username", "")) if info.get("username") else (info.get("first_name", "") or cid_str)
+        mark = "✅ " if cid_str in selected else "⬜ "
+        kb.add(types.InlineKeyboardButton(mark + name, callback_data="multi_toggle:" + str(cid_str)))
+    if not has_any:
+        kb.add(types.InlineKeyboardButton("Пока нет подписчиков", callback_data="noop"))
+    kb.add(types.InlineKeyboardButton(
+        "▶️ Отправить выбранным", callback_data="multi_send"
+    ))
+    kb.add(types.InlineKeyboardButton(
+        "❌ Сброс выбора", callback_data="multi_clear"
+    ))
+    kb.add(types.InlineKeyboardButton(
+        "⬅️ Назад", callback_data="back_main"
+    ))
+    return kb
 
 
 def send_to_all(text):
@@ -624,6 +715,9 @@ def cmd_broadcast(message):
 @bot.message_handler(commands=["cancel"])
 def cmd_cancel(message):
     awaiting_broadcast.pop(str(message.chat.id), None)
+    awaiting_send_one.pop(str(message.chat.id), None)
+    awaiting_send_multi.pop(str(message.chat.id), None)
+    multi_selected.pop(str(message.chat.id), None)
     bot.send_message(message.chat.id, "Отменено.", reply_markup=main_keyboard())
 
 
@@ -635,6 +729,36 @@ def cmd_subs_list(message):
     bot.send_message(
         message.chat.id,
         format_subscribers(),
+        reply_markup=admin_keyboard(),
+    )
+
+
+@bot.message_handler(commands=["send"])
+def cmd_send(message):
+    if not is_admin(message.chat.id):
+        bot.send_message(message.chat.id, "⛔ Нет доступа.")
+        return
+    parts = (message.text or "").split(" ", 2)
+    if len(parts) < 3:
+        bot.send_message(
+            message.chat.id,
+            "Формат: /send <@username или user_id> <текст>\n"
+            "Пример: /send @klesheryy Привет!\n"
+            "Или жми «Отправить одному» в /admin",
+        )
+        return
+    target = resolve_target(parts[1])
+    text = parts[2].strip()
+    if target is None:
+        bot.send_message(message.chat.id, "❌ Не нашёл подписчика: " + parts[1])
+        return
+    if not text:
+        bot.send_message(message.chat.id, "❌ Пустой текст.")
+        return
+    ok = send_to_user(target, text)
+    bot.send_message(
+        message.chat.id,
+        "✅ Отправлено пользователю {}" if ok else "❌ Не удалось отправить (он заблокировал бота?)",
         reply_markup=admin_keyboard(),
     )
 
@@ -652,6 +776,38 @@ def any_message(message):
         bot.send_message(
             message.chat.id,
             "✅ Рассылка отправлена.\nУспешно: {}\nНе удалось: {}".format(sent, failed),
+            reply_markup=admin_keyboard(),
+        )
+        return
+
+    # Точечная отправка админом одному
+    if is_admin(message.chat.id) and str(message.chat.id) in awaiting_send_one:
+        target = awaiting_send_one.pop(str(message.chat.id), None)
+        text = (message.text or "").strip()
+        if not text:
+            bot.send_message(message.chat.id, "Пустой текст, отмена.", reply_markup=admin_keyboard())
+            return
+        ok = send_to_user(target, text)
+        bot.send_message(
+            message.chat.id,
+            "✅ Отправлено пользователю {}".format(target) if ok else "❌ Не удалось отправить пользователю {}".format(target),
+            reply_markup=admin_keyboard(),
+        )
+        return
+
+    # Точечная отправка админом нескольким
+    if is_admin(message.chat.id) and awaiting_send_multi.get(str(message.chat.id)):
+        awaiting_send_multi.pop(str(message.chat.id), None)
+        ids = list(multi_selected.get(str(message.chat.id), set()))
+        multi_selected.pop(str(message.chat.id), None)
+        text = (message.text or "").strip()
+        if not text or not ids:
+            bot.send_message(message.chat.id, "Отмена: пустой текст или никто не выбран.", reply_markup=admin_keyboard())
+            return
+        sent, failed = broadcast_to_ids([int(i) for i in ids] if False else [int(x) for x in ids], text)
+        bot.send_message(
+            message.chat.id,
+            "✅ Отправлено выбранным.\nУспешно: {}\nНе удалось: {}".format(sent, failed),
             reply_markup=admin_keyboard(),
         )
         return
@@ -755,6 +911,102 @@ def cb_admin_subs(call):
         return
     bot.answer_callback_query(call.id)
     bot.send_message(call.message.chat.id, format_subscribers(), reply_markup=admin_keyboard())
+
+
+@bot.callback_query_handler(func=lambda call: call.data == "admin_send_one")
+def cb_admin_send_one(call):
+    if not is_admin(call.message.chat.id):
+        bot.answer_callback_query(call.id, text="⛔ Нет доступа", show_alert=True)
+        return
+    bot.answer_callback_query(call.id)
+    bot.send_message(
+        call.message.chat.id,
+        "👤 Кому отправить? Нажми на подписчика:",
+        reply_markup=subscribers_list_keyboard(),
+    )
+
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("send_to:"))
+def cb_send_to(call):
+    if not is_admin(call.message.chat.id):
+        bot.answer_callback_query(call.id, text="⛔ Нет доступа", show_alert=True)
+        return
+    target = call.data.split(":", 1)[1]
+    bot.answer_callback_query(call.id)
+    awaiting_send_one[str(call.message.chat.id)] = int(target)
+    bot.send_message(
+        call.message.chat.id,
+        "✉️ Напиши текст для пользователя {} следующим сообщением.\nДля отмены — /cancel".format(target),
+    )
+
+
+@bot.callback_query_handler(func=lambda call: call.data == "admin_multi")
+def cb_admin_multi(call):
+    if not is_admin(call.message.chat.id):
+        bot.answer_callback_query(call.id, text="⛔ Нет доступа", show_alert=True)
+        return
+    bot.answer_callback_query(call.id)
+    multi_selected[str(call.message.chat.id)] = set()
+    bot.send_message(
+        call.message.chat.id,
+        "👥 Отмечай кого включить кнопками, потом жми «Отправить выбранным»:",
+        reply_markup=multi_keyboard(call.message.chat.id),
+    )
+
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("multi_toggle:"))
+def cb_multi_toggle(call):
+    if not is_admin(call.message.chat.id):
+        bot.answer_callback_query(call.id, text="⛔ Нет доступа", show_alert=True)
+        return
+    cid = call.data.split(":", 1)[1]
+    selected = multi_selected.setdefault(str(call.message.chat.id), set())
+    if cid in selected:
+        selected.remove(cid)
+    else:
+        selected.add(cid)
+    bot.answer_callback_query(call.id)
+    bot.send_message(
+        call.message.chat.id,
+        "👥 Выбрано: {} чел. Отмечай ещё или жми отправку:".format(len(selected)),
+        reply_markup=multi_keyboard(call.message.chat.id),
+    )
+
+
+@bot.callback_query_handler(func=lambda call: call.data == "multi_clear")
+def cb_multi_clear(call):
+    if not is_admin(call.message.chat.id):
+        bot.answer_callback_query(call.id, text="⛔ Нет доступа", show_alert=True)
+        return
+    bot.answer_callback_query(call.id)
+    multi_selected[str(call.message.chat.id)] = set()
+    bot.send_message(
+        call.message.chat.id,
+        "👥 Выбор сброшен:",
+        reply_markup=multi_keyboard(call.message.chat.id),
+    )
+
+
+@bot.callback_query_handler(func=lambda call: call.data == "multi_send")
+def cb_multi_send(call):
+    if not is_admin(call.message.chat.id):
+        bot.answer_callback_query(call.id, text="⛔ Нет доступа", show_alert=True)
+        return
+    selected = multi_selected.get(str(call.message.chat.id), set())
+    if not selected:
+        bot.answer_callback_query(call.id, text="Никого не выбрано", show_alert=True)
+        return
+    bot.answer_callback_query(call.id)
+    awaiting_send_multi[str(call.message.chat.id)] = True
+    bot.send_message(
+        call.message.chat.id,
+        "✉️ Напиши текст для {} выбранных следующим сообщением.\nДля отмены — /cancel".format(len(selected)),
+    )
+
+
+@bot.callback_query_handler(func=lambda call: call.data == "noop")
+def cb_noop(call):
+    bot.answer_callback_query(call.id)
 
 
 @bot.callback_query_handler(func=lambda call: call.data == "back_main")
