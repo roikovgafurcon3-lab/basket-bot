@@ -2,8 +2,6 @@ name: bot
 
 on:
   workflow_dispatch:
-  schedule:
-    - cron: '0 * * * *'
 
 permissions:
   actions: write
@@ -11,7 +9,7 @@ permissions:
 
 concurrency:
   group: basket-bot
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   run:
