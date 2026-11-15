@@ -40,6 +40,7 @@ MOSCOW = pytz.timezone("Europe/Moscow")
 ANCHOR_HOUR = 20
 SLOT_MIN = 30
 BASKET_INDEX = 8
+BOUNCER_INDEX = 6
 
 MODES = [
     "Пожиратели душ",
@@ -76,9 +77,18 @@ def load_subscribers():
     if CHAT_ID and str(CHAT_ID) not in subscribers:
         subscribers[str(CHAT_ID)] = {
             "enabled": True,
+            "bouncer": True,
             "username": "",
             "first_name": "",
         }
+    # миграция старых записей: у владельца Вышибала включён, у остальных выключен
+    for cid, info in subscribers.items():
+        if not isinstance(info, dict):
+            continue
+        if "enabled" not in info:
+            info["enabled"] = True
+        if "bouncer" not in info:
+            info["bouncer"] = (str(cid) == str(CHAT_ID))
 
 
 def save_subscribers_local():
@@ -145,6 +155,7 @@ def ensure_subscriber(chat):
     if cid not in subscribers:
         subscribers[cid] = {
             "enabled": True,
+            "bouncer": (cid == str(CHAT_ID)),
             "username": (chat.username or ""),
             "first_name": (chat.first_name or ""),
         }
@@ -158,6 +169,8 @@ def ensure_subscriber(chat):
                 subscribers[cid]["first_name"] = chat.first_name
         except Exception:
             pass
+    if "bouncer" not in subscribers[cid]:
+        subscribers[cid]["bouncer"] = (cid == str(CHAT_ID))
     return subscribers[cid]
 
 
@@ -168,15 +181,36 @@ def is_enabled(chat_id):
     return bool(info.get("enabled", True))
 
 
-def get_enabled_ids():
+def is_bouncer_enabled(chat_id):
+    info = subscribers.get(str(chat_id))
+    if info is None:
+        return str(chat_id) == str(CHAT_ID)
+    return bool(info.get("bouncer", str(chat_id) == str(CHAT_ID)))
+
+
+def _ids_where(field, default_admin):
     ids = []
     for cid, info in subscribers.items():
         try:
-            if info.get("enabled", True):
+            default = default_admin and str(cid) == str(CHAT_ID)
+            if bool(info.get(field, default)):
                 ids.append(int(cid))
         except Exception:
             continue
     return ids
+
+
+def get_basket_ids():
+    return _ids_where("enabled", True)
+
+
+def get_bouncer_ids():
+    return _ids_where("bouncer", True)
+
+
+def get_enabled_ids():
+    ids = list(set(get_basket_ids()) | set(get_bouncer_ids()))
+    return sorted(ids)
 
 
 load_subscribers()
@@ -246,12 +280,31 @@ def main_keyboard():
     return kb
 
 
+def settings_text(chat_id):
+    basket_on = is_enabled(chat_id)
+    bouncer_on = is_bouncer_enabled(chat_id)
+    return (
+        "⚙️ Настройки\n\n"
+        "🏀 Баскет: {}\n"
+        "🥊 Вышибала: {}\n\n"
+        "Нажми на режим, чтобы включить или выключить уведомления."
+    ).format(
+        "ВКЛ ✅" if basket_on else "ВЫКЛ 🔕",
+        "ВКЛ ✅" if bouncer_on else "ВЫКЛ 🔕",
+    )
+
+
 def settings_keyboard(chat_id):
     kb = types.InlineKeyboardMarkup()
-    enabled = is_enabled(chat_id)
+    basket_on = is_enabled(chat_id)
+    bouncer_on = is_bouncer_enabled(chat_id)
     kb.add(types.InlineKeyboardButton(
-        "🔔 Уведомления: ВКЛ" if enabled else "🔕 Уведомления: ВЫКЛ",
-        callback_data="toggle_notify"
+        "🏀 Баскет: ВКЛ ✅" if basket_on else "🏀 Баскет: ВЫКЛ 🔕",
+        callback_data="toggle_basket"
+    ))
+    kb.add(types.InlineKeyboardButton(
+        "🥊 Вышибала: ВКЛ ✅" if bouncer_on else "🥊 Вышибала: ВЫКЛ 🔕",
+        callback_data="toggle_bouncer"
     ))
     kb.add(types.InlineKeyboardButton(
         "🏀 Какой режим сейчас?", callback_data="current_mode"
@@ -413,8 +466,7 @@ def multi_keyboard(admin_id):
     return kb
 
 
-def send_to_all(text):
-    ids = get_enabled_ids()
+def send_to_ids(ids, text):
     if not ids:
         print("Нет подписчиков с включёнными уведомлениями")
         return
@@ -427,9 +479,14 @@ def send_to_all(text):
                 if "blocked" in str(e).lower():
                     if str(cid) in subscribers:
                         subscribers[str(cid)]["enabled"] = False
+                        subscribers[str(cid)]["bouncer"] = False
                         save_subscribers()
             except Exception:
                 pass
+
+
+def send_to_all(text):
+    send_to_ids(get_enabled_ids(), text)
 
 
 @bot.message_handler(commands=["start"])
@@ -469,14 +526,9 @@ def cmd_help(message):
 @bot.message_handler(commands=["settings"])
 def cmd_settings(message):
     ensure_subscriber(message.chat)
-    enabled = is_enabled(message.chat.id)
     bot.send_message(
         message.chat.id,
-        "⚙️ Настройки\n\n"
-        "Уведомления о баскете: {}\n\n"
-        "Нажми кнопку, чтобы переключить.".format(
-            "ВКЛ ✅" if enabled else "ВЫКЛ 🔕"
-        ),
+        settings_text(message.chat.id),
         reply_markup=settings_keyboard(message.chat.id),
     )
 
@@ -763,6 +815,30 @@ def cmd_send(message):
     )
 
 
+@bot.message_handler(commands=["basket"])
+def cmd_basket(message):
+    info = ensure_subscriber(message.chat)
+    info["enabled"] = not info.get("enabled", True)
+    save_subscribers()
+    bot.send_message(
+        message.chat.id,
+        settings_text(message.chat.id),
+        reply_markup=settings_keyboard(message.chat.id),
+    )
+
+
+@bot.message_handler(commands=["bouncer"])
+def cmd_bouncer(message):
+    info = ensure_subscriber(message.chat)
+    info["bouncer"] = not info.get("bouncer", False)
+    save_subscribers()
+    bot.send_message(
+        message.chat.id,
+        settings_text(message.chat.id),
+        reply_markup=settings_keyboard(message.chat.id),
+    )
+
+
 @bot.message_handler(func=lambda m: True)
 def any_message(message):
     # Если админ ждёт текст рассылки — следующее сообщение считаем рассылкой
@@ -851,32 +927,44 @@ def cb_current_mode(call):
 @bot.callback_query_handler(func=lambda call: call.data == "settings")
 def cb_settings(call):
     ensure_subscriber(call.message.chat)
-    enabled = is_enabled(call.message.chat.id)
     bot.answer_callback_query(call.id)
     bot.send_message(
         call.message.chat.id,
-        "⚙️ Настройки\n\nУведомления о баскете: {}".format(
-            "ВКЛ ✅" if enabled else "ВЫКЛ 🔕"
-        ),
+        settings_text(call.message.chat.id),
         reply_markup=settings_keyboard(call.message.chat.id),
     )
 
 
-@bot.callback_query_handler(func=lambda call: call.data == "toggle_notify")
-def cb_toggle(call):
+@bot.callback_query_handler(func=lambda call: call.data in ("toggle_basket", "toggle_notify"))
+def cb_toggle_basket(call):
     info = ensure_subscriber(call.message.chat)
     info["enabled"] = not info.get("enabled", True)
     save_subscribers()
     bot.answer_callback_query(
         call.id,
-        text="Уведомления включены" if info["enabled"] else "Уведомления выключены",
+        text="Баскет включён" if info["enabled"] else "Баскет выключен",
         show_alert=False,
     )
     bot.send_message(
         call.message.chat.id,
-        "⚙️ Настройки\n\nУведомления о баскете: {}".format(
-            "ВКЛ ✅" if info["enabled"] else "ВЫКЛ 🔕"
-        ),
+        settings_text(call.message.chat.id),
+        reply_markup=settings_keyboard(call.message.chat.id),
+    )
+
+
+@bot.callback_query_handler(func=lambda call: call.data == "toggle_bouncer")
+def cb_toggle_bouncer(call):
+    info = ensure_subscriber(call.message.chat)
+    info["bouncer"] = not info.get("bouncer", False)
+    save_subscribers()
+    bot.answer_callback_query(
+        call.id,
+        text="Вышибала включён" if info["bouncer"] else "Вышибала выключен",
+        show_alert=False,
+    )
+    bot.send_message(
+        call.message.chat.id,
+        settings_text(call.message.chat.id),
         reply_markup=settings_keyboard(call.message.chat.id),
     )
 
@@ -1028,31 +1116,61 @@ last_start_key = None
 last_warn_key = None
 
 
+last_b_start_key = None
+last_b_warn_key = None
+
+
+def _mode_start_key(state, index):
+    sec_ago = (state["pos_sec"] - index * SLOT_MIN * 60) % CYCLE_SEC
+    start_dt = state["now"] - timedelta(seconds=sec_ago)
+    return start_dt.replace(
+        minute=(start_dt.minute // SLOT_MIN) * SLOT_MIN,
+        second=0,
+        microsecond=0,
+    ).isoformat()
+
+
+def _alert_mode(state, index, kind, ids_func, warn_text, start_text):
+    global last_start_key, last_warn_key, last_b_start_key, last_b_warn_key
+    slot_sec = index * SLOT_MIN * 60
+    sec_to = (slot_sec - state["pos_sec"]) % CYCLE_SEC
+    in_mode = (state["slot"] == index)
+    start_key = _mode_start_key(state, index)
+
+    if kind == "basket":
+        warn_seen, start_seen = last_warn_key, last_start_key
+    else:
+        warn_seen, start_seen = last_b_warn_key, last_b_start_key
+
+    if (not in_mode) and 0 < sec_to <= 5 * 60 and warn_seen != start_key:
+        send_to_ids(ids_func(), warn_text)
+        if kind == "basket":
+            last_warn_key = start_key
+        else:
+            last_b_warn_key = start_key
+        warn_seen = start_key
+
+    minutes_in = ((state["pos_sec"] - slot_sec) % CYCLE_SEC) // 60
+    if in_mode and minutes_in <= 2 and start_seen != start_key:
+        send_to_ids(ids_func(), start_text)
+        if kind == "basket":
+            last_start_key = start_key
+        else:
+            last_b_start_key = start_key
+
+
 def notification_job():
-    global last_start_key, last_warn_key
     state = get_state()
-    now = state["now"]
-    basket_start = now - timedelta(
-        seconds=(state["pos_sec"] - BASKET_OFFSET_SEC) % CYCLE_SEC
+    _alert_mode(
+        state, BASKET_INDEX, "basket", get_basket_ids,
+        "⏰ Через 5 минут начнётся баскет!",
+        "🏀 Баскет начался! У тебя 30 минут",
     )
-    key = basket_start.replace(second=0, microsecond=0).isoformat()
-
-    if (
-        not state["in_basket"]
-        and 0 < state["to_basket_sec"] <= 5 * 60
-        and key != last_warn_key
-    ):
-        send_to_all("⏰ Через 5 минут начнётся баскет!")
-        last_warn_key = key
-
-    minutes_into_basket = (state["pos_sec"] - BASKET_OFFSET_SEC) // 60
-    if (
-        state["in_basket"]
-        and minutes_into_basket <= 2
-        and key != last_start_key
-    ):
-        send_to_all("🏀 Баскет начался! У тебя 30 минут")
-        last_start_key = key
+    _alert_mode(
+        state, BOUNCER_INDEX, "bouncer", get_bouncer_ids,
+        "⏰ Через 5 минут начнётся Вышибала!",
+        "🥊 Вышибала начался! У тебя 30 минут",
+    )
 
 
 # ======================= ВЕБ-СЕРВЕР (ПИНГ) =======================
