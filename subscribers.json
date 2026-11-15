@@ -2,36 +2,43 @@
   "8823175136": {
     "enabled": true,
     "username": "C0stro",
-    "first_name": "Gufe"
+    "first_name": "Gufe",
+    "bouncer": false
   },
   "7309945042": {
     "enabled": true,
     "username": "klesheryy",
-    "first_name": "WW"
+    "first_name": "WW",
+    "bouncer": false
   },
   "5323358333": {
     "enabled": false,
     "username": "kolqwaass",
-    "first_name": "кольца"
+    "first_name": "кольца",
+    "bouncer": false
   },
   "6267095357": {
     "enabled": true,
     "username": "LovePoko",
-    "first_name": "ниссан"
+    "first_name": "ниссан",
+    "bouncer": false
   },
   "7765743067": {
     "enabled": true,
     "username": "",
-    "first_name": "hhh"
+    "first_name": "hhh",
+    "bouncer": false
   },
   "5491503852": {
     "enabled": true,
     "username": "wathdiss0n4nc3",
-    "first_name": "воскрес в токио"
+    "first_name": "воскрес в токио",
+    "bouncer": false
   },
   "5746013243": {
     "enabled": true,
     "username": "wxrblessed",
-    "first_name": "𝛍𝜼𝒉𝛆𝜤𝜤𝛂_𝚫𝜇𝒓𝛂𝝇𝜺𝑳𝑳"
+    "first_name": "𝛍𝜼𝒉𝛆𝜤𝜤𝛂_𝚫𝜇𝒓𝛂𝝇𝜺𝑳𝑳",
+    "bouncer": false
   }
 }
