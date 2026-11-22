@@ -36,6 +36,12 @@ GH_REPO = os.getenv("GH_REPO", "") or os.getenv("GITHUB_REPOSITORY", "")
 
 SUBSCRIBERS_FILE = "subscribers.json"
 
+# Текст, который забаненный видит сразу при бане и при любой попытке написать боту.
+# Менять только здесь.
+BAN_MESSAGE = (
+    "пошел нахуй ты не достоин баскета Абриган ебаный ты заблокирован на всегда!"
+)
+
 MOSCOW = pytz.timezone("Europe/Moscow")
 ANCHOR_HOUR = 20
 SLOT_MIN = 30
@@ -89,6 +95,8 @@ def load_subscribers():
             info["enabled"] = True
         if "bouncer" not in info:
             info["bouncer"] = (str(cid) == str(CHAT_ID))
+        if "banned" not in info:
+            info["banned"] = False
 
 
 def save_subscribers_local():
@@ -188,10 +196,17 @@ def is_bouncer_enabled(chat_id):
     return bool(info.get("bouncer", str(chat_id) == str(CHAT_ID)))
 
 
+def is_banned(chat_id):
+    info = subscribers.get(str(chat_id))
+    return bool(info and info.get("banned"))
+
+
 def _ids_where(field, default_admin):
     ids = []
     for cid, info in subscribers.items():
         try:
+            if info.get("banned"):
+                continue
             default = default_admin and str(cid) == str(CHAT_ID)
             if bool(info.get(field, default)):
                 ids.append(int(cid))
@@ -267,6 +282,28 @@ def minutes_to_basket_text(state):
 # ======================= ТЕЛЕГРАМ-БОТ =======================
 
 bot = telebot.TeleBot(BOT_TOKEN)
+
+
+# Забаненные перехватываются самыми первыми хендлерами:
+# на любое сообщение или нажатие кнопки они получают только BAN_MESSAGE.
+@bot.message_handler(func=lambda m: is_banned(m.chat.id))
+def banned_user_message(message):
+    try:
+        bot.send_message(message.chat.id, BAN_MESSAGE)
+    except Exception:
+        pass
+
+
+@bot.callback_query_handler(func=lambda call: is_banned(call.from_user.id) or is_banned(call.message.chat.id))
+def banned_user_callback(call):
+    try:
+        bot.answer_callback_query(call.id)
+    except Exception:
+        pass
+    try:
+        bot.send_message(call.message.chat.id, BAN_MESSAGE)
+    except Exception:
+        pass
 
 
 def main_keyboard():
@@ -377,7 +414,7 @@ def format_subscribers():
     lines = ["👥 Подписчики:"]
     for cid, info in subscribers.items():
         name = "@" + info.get("username", "") if info.get("username") else info.get("first_name", "")
-        status = "ВКЛ" if info.get("enabled") else "ВЫКЛ"
+        status = "🚫 БАН" if info.get("banned") else ("ВКЛ" if info.get("enabled") else "ВЫКЛ")
         lines.append("- {} ({}): {}".format(name or "без ника", cid, status))
     if len(lines) == 1:
         lines.append("- пока пусто")
@@ -402,6 +439,8 @@ def resolve_target(token):
 
 
 def send_to_user(cid, text):
+    if is_banned(cid):
+        return False
     try:
         bot.send_message(cid, text)
         return True
@@ -471,6 +510,8 @@ def send_to_ids(ids, text):
         print("Нет подписчиков с включёнными уведомлениями")
         return
     for cid in ids:
+        if is_banned(cid):
+            continue
         try:
             bot.send_message(cid, text)
         except Exception as e:
@@ -517,7 +558,8 @@ def cmd_help(message):
         "/disable — выключить напоминания о баскете\n"
         "/status — текущий режим и статус подписки\n"
         "/test — тестовое сообщение только тебе\n"
-        "/help — это меню\n\n"
+        "/help — это меню\n"
+        "/ban — заблокировать навсегда (только админ)\n\n"
         "Баскет начинается каждые 4,5 часа: 00:00, 04:30, 09:00, 13:30, 18:00, 22:30.",
         reply_markup=main_keyboard(),
     )
@@ -612,7 +654,9 @@ def cmd_admin(message):
         return
     bot.send_message(
         message.chat.id,
-        "👑 Админка\n\nВыбери действие:",
+        "👑 Админка\n\nВыбери действие:\n\n"
+        "🚫 Забанить навсегда: /ban @username или /ban ID\n"
+        "(он сразу увидит твой текст, напоминания о баскете приходить не будут)",
         reply_markup=admin_keyboard(),
     )
 
@@ -625,7 +669,7 @@ def cmd_subs(message):
     lines = []
     for cid, info in subscribers.items():
         uname = "@" + info.get("username", "") if info.get("username") else "без ника"
-        status = "✅" if info.get("enabled") else "🔕"
+        status = "🚫" if info.get("banned") else ("✅" if info.get("enabled") else "🔕")
         lines.append(status + " " + str(cid) + " (" + uname + ")")
     text = "👥 Подписчики (" + str(len(subscribers)) + "):\n" + ("\n".join(lines) if lines else "никого нет")
     bot.send_message(message.chat.id, text, reply_markup=admin_keyboard())
@@ -702,7 +746,7 @@ def cb_admin_subs(call):
     lines = []
     for cid, info in subscribers.items():
         uname = "@" + info.get("username", "") if info.get("username") else "без ника"
-        status = "✅" if info.get("enabled") else "🔕"
+        status = "🚫" if info.get("banned") else ("✅" if info.get("enabled") else "🔕")
         lines.append(status + " " + str(cid) + " (" + uname + ")")
     text = "👥 Подписчики (" + str(len(subscribers)) + "):\n" + ("\n".join(lines) if lines else "никого нет")
     bot.send_message(call.message.chat.id, text, reply_markup=admin_keyboard())
@@ -736,7 +780,8 @@ def cmd_admin(message):
         return
     bot.send_message(
         message.chat.id,
-        "🛠 Админка\n\nВыбери действие:",
+        "🛠 Админка\n\nВыбери действие:\n\n"
+        "🚫 Забанить навсегда: /ban @username или /ban ID",
         reply_markup=admin_keyboard(),
     )
 
@@ -811,6 +856,61 @@ def cmd_send(message):
     bot.send_message(
         message.chat.id,
         "✅ Отправлено пользователю {}" if ok else "❌ Не удалось отправить (он заблокировал бота?)",
+        reply_markup=admin_keyboard(),
+    )
+
+
+@bot.message_handler(commands=["ban"])
+def cmd_ban(message):
+    if not is_admin(message.chat.id):
+        bot.send_message(message.chat.id, "⛔ Доступ запрещён. Только владелец.")
+        return
+    parts = (message.text or "").split(maxsplit=1)
+    if len(parts) < 2 or not parts[1].strip():
+        bot.send_message(
+            message.chat.id,
+            "🚫 Использование: /ban @username или /ban ID\n"
+            "Пример: /ban 123456789",
+            reply_markup=admin_keyboard(),
+        )
+        return
+    target = parts[1].strip()
+    cid = resolve_target(target)
+    if cid is None:
+        bot.send_message(
+            message.chat.id,
+            "❌ Не нашёл подписчика: " + target,
+            reply_markup=admin_keyboard(),
+        )
+        return
+    if str(cid) == str(ADMIN_ID):
+        bot.send_message(message.chat.id, "❌ Нельзя забанить себя.", reply_markup=admin_keyboard())
+        return
+    info = subscribers.get(str(cid))
+    if info is None:
+        info = {
+            "enabled": False,
+            "bouncer": False,
+            "username": target.lstrip("@"),
+            "first_name": "",
+        }
+        subscribers[str(cid)] = info
+    info["banned"] = True
+    info["enabled"] = False
+    info["bouncer"] = False
+    info["banned_at"] = datetime.now(MOSCOW).isoformat()
+    save_subscribers()
+    # В момент бана он получает сразу BAN_MESSAGE, а не обычное уведомление о бане.
+    try:
+        bot.send_message(cid, BAN_MESSAGE)
+        delivery = "✅ Текст ему отправлен."
+    except Exception as e:
+        print("ban notice to %s failed: %s" % (cid, e))
+        delivery = "⚠️ Не удалось отправить текст (возможно, он заблокировал бота)."
+    bot.send_message(
+        message.chat.id,
+        "🚫 Забанен навсегда: {} ({})\n"
+        "Напоминания о баскете выключены.\n{}".format(target, cid, delivery),
         reply_markup=admin_keyboard(),
     )
 
@@ -1166,11 +1266,7 @@ def notification_job():
         "⏰ Через 5 минут начнётся баскет!",
         "🏀 Баскет начался! У тебя 30 минут",
     )
-    _alert_mode(
-        state, BOUNCER_INDEX, "bouncer", get_bouncer_ids,
-        "⏰ Через 5 минут начнётся Вышибала!",
-        "🥊 Вышибала начался! У тебя 30 минут",
-    )
+    # Уведомления о Вышибале отключены.
 
 
 # ======================= ВЕБ-СЕРВЕР (ПИНГ) =======================
