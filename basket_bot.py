@@ -46,7 +46,6 @@ MOSCOW = pytz.timezone("Europe/Moscow")
 ANCHOR_HOUR = 20
 SLOT_MIN = 30
 BASKET_INDEX = 8
-BOUNCER_INDEX = 6
 
 MODES = [
     "Пожиратели душ",
@@ -189,13 +188,6 @@ def is_enabled(chat_id):
     return bool(info.get("enabled", True))
 
 
-def is_bouncer_enabled(chat_id):
-    info = subscribers.get(str(chat_id))
-    if info is None:
-        return str(chat_id) == str(CHAT_ID)
-    return bool(info.get("bouncer", str(chat_id) == str(CHAT_ID)))
-
-
 def is_banned(chat_id):
     info = subscribers.get(str(chat_id))
     return bool(info and info.get("banned"))
@@ -219,13 +211,8 @@ def get_basket_ids():
     return _ids_where("enabled", True)
 
 
-def get_bouncer_ids():
-    return _ids_where("bouncer", True)
-
-
 def get_enabled_ids():
-    ids = list(set(get_basket_ids()) | set(get_bouncer_ids()))
-    return sorted(ids)
+    return sorted(get_basket_ids())
 
 
 load_subscribers()
@@ -319,29 +306,21 @@ def main_keyboard():
 
 def settings_text(chat_id):
     basket_on = is_enabled(chat_id)
-    bouncer_on = is_bouncer_enabled(chat_id)
     return (
         "⚙️ Настройки\n\n"
-        "🏀 Баскет: {}\n"
-        "🥊 Вышибала: {}\n\n"
-        "Нажми на режим, чтобы включить или выключить уведомления."
+        "🏀 Баскет: {}\n\n"
+        "Нажми на кнопку, чтобы включить или выключить уведомления."
     ).format(
         "ВКЛ ✅" if basket_on else "ВЫКЛ 🔕",
-        "ВКЛ ✅" if bouncer_on else "ВЫКЛ 🔕",
     )
 
 
 def settings_keyboard(chat_id):
     kb = types.InlineKeyboardMarkup()
     basket_on = is_enabled(chat_id)
-    bouncer_on = is_bouncer_enabled(chat_id)
     kb.add(types.InlineKeyboardButton(
         "🏀 Баскет: ВКЛ ✅" if basket_on else "🏀 Баскет: ВЫКЛ 🔕",
         callback_data="toggle_basket"
-    ))
-    kb.add(types.InlineKeyboardButton(
-        "🥊 Вышибала: ВКЛ ✅" if bouncer_on else "🥊 Вышибала: ВЫКЛ 🔕",
-        callback_data="toggle_bouncer"
     ))
     kb.add(types.InlineKeyboardButton(
         "🏀 Какой режим сейчас?", callback_data="current_mode"
@@ -927,18 +906,6 @@ def cmd_basket(message):
     )
 
 
-@bot.message_handler(commands=["bouncer"])
-def cmd_bouncer(message):
-    info = ensure_subscriber(message.chat)
-    info["bouncer"] = not info.get("bouncer", False)
-    save_subscribers()
-    bot.send_message(
-        message.chat.id,
-        settings_text(message.chat.id),
-        reply_markup=settings_keyboard(message.chat.id),
-    )
-
-
 @bot.message_handler(func=lambda m: True)
 def any_message(message):
     # Если админ ждёт текст рассылки — следующее сообщение считаем рассылкой
@@ -1043,23 +1010,6 @@ def cb_toggle_basket(call):
     bot.answer_callback_query(
         call.id,
         text="Баскет включён" if info["enabled"] else "Баскет выключен",
-        show_alert=False,
-    )
-    bot.send_message(
-        call.message.chat.id,
-        settings_text(call.message.chat.id),
-        reply_markup=settings_keyboard(call.message.chat.id),
-    )
-
-
-@bot.callback_query_handler(func=lambda call: call.data == "toggle_bouncer")
-def cb_toggle_bouncer(call):
-    info = ensure_subscriber(call.message.chat)
-    info["bouncer"] = not info.get("bouncer", False)
-    save_subscribers()
-    bot.answer_callback_query(
-        call.id,
-        text="Вышибала включён" if info["bouncer"] else "Вышибала выключен",
         show_alert=False,
     )
     bot.send_message(
